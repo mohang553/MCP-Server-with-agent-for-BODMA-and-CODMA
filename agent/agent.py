@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-MCP Agent FastAPI Server - Calculator Edition with Gemini AI
-HTTP Transport Version (Production Ready)
+Calculator Agent API
+HTTP MCP Version (SSE)
+Render Production Ready
 """
 
 import asyncio
 import json
-import sys
 import os
+import sys
 from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
@@ -16,9 +17,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# MCP HTTP transport
+# MCP (SSE transport)
 from mcp import ClientSession
-from mcp.client.http import http_client
+from mcp.client.sse import sse_client
 
 # Gemini
 import google.generativeai as genai
@@ -31,16 +32,16 @@ load_dotenv()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 if not GEMINI_API_KEY:
-    print("❌ ERROR: GEMINI_API_KEY not found")
+    print("❌ GEMINI_API_KEY not found")
     sys.exit(1)
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-# 🔥 Your deployed MCP server
-MCP_SERVER_URL = "https://calculator-mcp-74e1.onrender.com/mcp/"
+MCP_SERVER_URL = "https://calculator-mcp-74e1.onrender.com/mcp"
+
 
 # ============================================================================
-# MCP CLIENT (HTTP VERSION)
+# MCP CLIENT
 # ============================================================================
 
 class MCPClient:
@@ -50,22 +51,22 @@ class MCPClient:
 
     @asynccontextmanager
     async def connect(self):
-        async with http_client(MCP_SERVER_URL) as session:
-            self.session = session
-            await session.initialize()
+        async with sse_client(MCP_SERVER_URL) as (read, write):
+            async with ClientSession(read, write) as session:
+                self.session = session
+                await session.initialize()
 
-            tools_list = await session.list_tools()
+                tools_list = await session.list_tools()
+                self.available_tools = [
+                    {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "input_schema": tool.inputSchema
+                    }
+                    for tool in tools_list.tools
+                ]
 
-            self.available_tools = [
-                {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "input_schema": tool.inputSchema
-                }
-                for tool in tools_list.tools
-            ]
-
-            yield self
+                yield self
 
     async def get_tools(self):
         return self.available_tools
@@ -74,16 +75,16 @@ class MCPClient:
         result = await self.session.call_tool(tool_name, arguments)
 
         if result.content:
-            return "\n".join(
+            return "\n".join([
                 item.text for item in result.content
                 if hasattr(item, "text")
-            )
+            ])
 
         return "No response"
 
 
 # ============================================================================
-# GEMINI CALCULATOR AGENT
+# CALCULATOR AGENT
 # ============================================================================
 
 class CalculatorAgent:
@@ -97,31 +98,23 @@ class CalculatorAgent:
         async with self.mcp_client.connect():
             self.tools = await self.mcp_client.get_tools()
 
-    def _extract_numeric_answer(self, response_text: str, decimal_places: int = 2):
+    def _extract_numeric_answer(self, text: str):
         import re
-        numbers = re.findall(r'-?\d+\.?\d*', response_text)
+        numbers = re.findall(r'-?\d+\.?\d*', text)
         if numbers:
-            try:
-                return str(round(float(numbers[0]), decimal_places))
-            except:
-                pass
-        return response_text
+            return str(round(float(numbers[0]), 2))
+        return text
 
-    async def _route_with_gemini(self, user_message: str):
+    async def _route(self, user_message: str):
 
         system_prompt = """
-You are a math agent.
+You are a math router.
 
-Available tools:
+Tools:
 - bodma_calculate
 - codma_calculate
 
-If user asks for:
-- Only BODMA → use bodma_calculate
-- Only CODMA → use codma_calculate
-- Both → use "both"
-
-Return STRICT JSON:
+Return JSON:
 {
  "action": "use_tool",
  "tool_name": "...",
@@ -144,62 +137,39 @@ Return STRICT JSON:
         if not self.tools:
             await self.initialize()
 
-        decision = await self._route_with_gemini(user_message)
+        decision = await self._route(user_message)
 
         if decision.get("action") == "use_tool":
 
-            tool_name = decision["tool_name"]
-            arguments = decision["arguments"]
-
             async with self.mcp_client.connect():
 
-                if tool_name == "both":
-                    bodma = await self.mcp_client.call_tool("bodma_calculate", arguments)
-                    codma = await self.mcp_client.call_tool("codma_calculate", arguments)
+                tool_result = await self.mcp_client.call_tool(
+                    decision["tool_name"],
+                    decision["arguments"]
+                )
 
-                    follow_up_prompt = f"""
-User asked: {user_message}
-
-BODMA result: {bodma}
-CODMA result: {codma}
-
-Return ONLY final numeric answer.
-"""
-
-                else:
-                    tool_result = await self.mcp_client.call_tool(tool_name, arguments)
-
-                    follow_up_prompt = f"""
+            final_prompt = f"""
 User asked: {user_message}
 
 Tool result:
 {tool_result}
 
-Return ONLY final numeric answer.
+Return only final numeric answer.
 """
 
-            final_response = self.model.generate_content(follow_up_prompt)
+            final_response = self.model.generate_content(final_prompt)
             numeric = self._extract_numeric_answer(final_response.text)
 
-            return {
-                "type": "direct_response",
-                "response": numeric
-            }
+            return {"response": numeric}
 
-        return {
-            "type": "direct_response",
-            "response": "Could not process request"
-        }
+        return {"response": "Unable to process"}
 
 
 # ============================================================================
 # FASTAPI APP
 # ============================================================================
 
-app = FastAPI(
-    title="Calculator Agent API (HTTP MCP Version)",
-    version="3.0.0"
-)
+app = FastAPI(title="Calculator Agent API (HTTP MCP Version)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -212,9 +182,6 @@ app.add_middleware(
 client = MCPClient()
 agent = CalculatorAgent(client)
 
-# ============================================================================
-# REQUEST MODELS
-# ============================================================================
 
 class ChatRequest(BaseModel):
     message: str
@@ -224,21 +191,16 @@ class ChatResponse(BaseModel):
     response: float
 
 
-# ============================================================================
-# ENDPOINTS
-# ============================================================================
-
 @app.get("/")
 def root():
     return {
         "status": "running",
-        "transport": "HTTP",
-        "mcp_server": MCP_SERVER_URL
+        "connected_to": MCP_SERVER_URL
     }
 
 
 @app.post("/chat-agent", response_model=ChatResponse)
-async def chat_with_agent(request: ChatRequest):
+async def chat(request: ChatRequest):
 
     result = await agent.run(request.message)
 
@@ -253,15 +215,18 @@ async def chat_with_agent(request: ChatRequest):
 # ============================================================================
 
 if __name__ == "__main__":
-    import uvicorn
-
     port = int(os.environ.get("PORT", 8005))
 
-    print("=" * 70)
-    print("🤖 CALCULATOR AGENT API - HTTP MCP VERSION")
-    print("=" * 70)
-    print(f"📡 Agent running on port: {port}")
-    print(f"🔌 Connected to MCP: {MCP_SERVER_URL}")
-    print("=" * 70)
+    print("=" * 60)
+    print("🤖 CALCULATOR AGENT API")
+    print("=" * 60)
+    print(f"📡 Running on port: {port}")
+    print("=" * 60)
 
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=port,
+        proxy_headers=True,
+        forwarded_allow_ips="*"
+    )
