@@ -38,7 +38,8 @@ if not GEMINI_API_KEY:
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-MCP_SERVER_URL = "https://calculator-mcp-74e1.onrender.com/"
+MCP_SERVER_URL = "https://calculator-mcp-74e1.onrender.com/mcp/sse"
+
 
 
 # ============================================================================
