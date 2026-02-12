@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """
-Calculator MCP Server - EXACT FIX
-The issue: FastMCP object is not callable
-Solution: Use create_fastapi_app() instead of mounting directly
+Calculator MCP Server 
 """
 
 from fastapi import FastAPI
@@ -21,7 +19,7 @@ app = FastAPI(
 
 
 # ============================================================================
-# HEALTH CHECK ENDPOINT
+# HEALTH CHECK ENDPOINTS
 # ============================================================================
 
 @app.get("/")
@@ -101,12 +99,11 @@ def codma(a: float, b: float) -> float:
 
 
 # ============================================================================
-# MOUNT MCP TO FASTAPI - CORRECT WAY
+# MOUNT MCP TO FASTAPI
 # ============================================================================
 
-# THIS IS THE FIX: Use create_fastapi_app() method, not direct mount
-mcp_app = mcp.create_fastapi_app()
-app.mount("/mcp", mcp_app)
+# FastMCP in version 1.26.0 is an ASGI app - mount directly
+app.mount("/mcp", mcp)
 
 
 # ============================================================================
@@ -126,7 +123,7 @@ if __name__ == "__main__":
     print("=" * 60)
     
     uvicorn.run(
-        "server_EXACT_FIX:app",
+        app,
         host="0.0.0.0",
         port=port,
         reload=False,
