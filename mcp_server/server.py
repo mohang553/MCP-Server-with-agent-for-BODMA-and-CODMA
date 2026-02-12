@@ -167,16 +167,18 @@ def list_tools():
 # ============================================================================
 
 if __name__ == "__main__":
+    import os
+    import uvicorn
+
+    port = int(os.environ.get("PORT", 8000))
+
     print("=" * 60)
     print("🚀 CALCULATOR MCP HTTP SERVER")
     print("=" * 60)
-    print("📡 Running on: http://localhost:8001")
-    print("🔌 MCP Endpoint: http://localhost:8001/mcp")
+    print(f"📡 Running on port: {port}")
     print("=" * 60)
 
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=8001,
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
         log_level="info"
     )
