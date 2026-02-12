@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pydantic
+python-dotenv
+httpx
+mcp
+google-generativeai
+typing-extensions

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "calculator-server": {
+      "command": "python",
+      "args": ["server.py"],
+      "env": {
+        "PYTHONIOENCODING": "utf-8"
+      }
+    }
+  }
+}
