@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
 """
-Calculator Agent API - EXACT FIX
-Issues Fixed:
-1. Handle 500 error from server gracefully
-2. Proper retry logic
-3. Better error messages
+Calculator Agent API
 """
 
 import asyncio
@@ -43,7 +39,7 @@ genai.configure(api_key=GEMINI_API_KEY)
 
 MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "https://calculator-mcp-74e1.onrender.com/mcp/sse")
 MAX_RETRIES = 3
-RETRY_DELAY = 2  # increased for server startup time
+RETRY_DELAY = 2
 
 
 # ============================================================================
@@ -57,7 +53,7 @@ class MCPClient:
 
     @asynccontextmanager
     async def connect(self):
-        """Connect with comprehensive retry logic and error handling"""
+        """Connect with retry logic"""
         last_error = None
         
         for attempt in range(MAX_RETRIES):
@@ -79,25 +75,24 @@ class MCPClient:
                             for tool in tools_list.tools
                         ]
 
-                        print(f"✅ MCP connected successfully. Tools: {[t['name'] for t in self.available_tools]}")
+                        print(f"✅ MCP connected. Tools: {[t['name'] for t in self.available_tools]}")
                         yield self
                         return
                         
             except Exception as e:
                 last_error = str(e)
-                print(f"⚠️  Connection attempt {attempt + 1} failed: {e}")
+                print(f"⚠️  Attempt {attempt + 1} failed: {e}")
                 
                 if attempt < MAX_RETRIES - 1:
                     await asyncio.sleep(RETRY_DELAY)
                 else:
-                    print(f"❌ Failed to connect after {MAX_RETRIES} attempts")
-                    raise RuntimeError(f"MCP connection failed: {last_error}")
+                    raise RuntimeError(f"MCP connection failed after {MAX_RETRIES} attempts: {last_error}")
 
     async def get_tools(self):
         return self.available_tools
 
     async def call_tool(self, tool_name: str, arguments: Dict[str, Any]):
-        """Call tool with error handling"""
+        """Call tool"""
         if not self.session:
             raise RuntimeError("MCP session not initialized")
 
@@ -125,7 +120,7 @@ class CalculatorAgent:
         self.initialized = False
 
     async def initialize(self):
-        """Initialize agent with available tools - only once"""
+        """Initialize agent"""
         if self.initialized:
             return
             
@@ -140,61 +135,40 @@ class CalculatorAgent:
 
     def _extract_numeric_answer(self, text: str) -> str:
         """Extract numeric answer from text"""
-        # Look for explicit answer patterns
-        patterns = [
-            r'(?:answer|result|equals?|is)[:\s]+(-?\d+\.?\d*)',
-            r'(-?\d+\.?\d*)',
-        ]
-
-        for pattern in patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                try:
-                    return str(round(float(match.group(1)), 2))
-                except (ValueError, IndexError):
-                    continue
-
-        # Fallback: get the last number
         numbers = re.findall(r'-?\d+\.?\d*', text)
         if numbers:
             try:
                 return str(round(float(numbers[-1]), 2))
             except ValueError:
                 pass
-
         return text
 
     async def _route(self, user_message: str) -> Dict[str, Any]:
         """Route user message to appropriate tool"""
-        system_prompt = """You are a math router that decides which calculation tool to use.
+        system_prompt = """You are a math router.
 
 Available tools:
 - bodma: Calculates (a^b) / (a * b)
 - codma: Calculates (a * b) + (a / b)
 
-Respond ONLY with valid JSON:
+Respond ONLY with JSON:
 {
   "action": "use_tool",
   "tool_name": "bodma or codma",
   "arguments": {"a": number, "b": number}
 }"""
 
-        prompt = system_prompt + f"\n\nUser request: {user_message}\n\nJSON:"
+        prompt = system_prompt + f"\n\nUser: {user_message}\n\nJSON:"
 
         try:
             response = self.model.generate_content(prompt)
             text = response.text.strip()
 
-            # Remove markdown code blocks
             if text.startswith("```"):
                 text = re.sub(r'```json\n?|\n?```', '', text).strip()
 
-            decision = json.loads(text)
-            return decision
+            return json.loads(text)
 
-        except json.JSONDecodeError as e:
-            print(f"❌ JSON parsing error: {e}")
-            return {"action": "error", "message": "Could not parse routing decision"}
         except Exception as e:
             print(f"❌ Routing error: {e}")
             return {"action": "error", "message": str(e)}
@@ -217,10 +191,9 @@ Respond ONLY with valid JSON:
                 tool_name = decision.get("tool_name")
                 arguments = decision.get("arguments", {})
 
-                # Validate arguments
                 if not isinstance(arguments, dict) or "a" not in arguments or "b" not in arguments:
                     return {
-                        "response": "Error: Invalid arguments. Need 'a' and 'b'",
+                        "response": "Error: Invalid arguments",
                         "success": False
                     }
 
@@ -230,22 +203,17 @@ Respond ONLY with valid JSON:
                     async with self.mcp_client.connect():
                         tool_result = await self.mcp_client.call_tool(tool_name, arguments)
 
-                    print(f"✅ Tool result: {tool_result}")
-                    
-                    # Extract the numeric result
                     numeric = self._extract_numeric_answer(tool_result)
                     
                     return {
                         "response": numeric,
-                        "success": True,
-                        "tool": tool_name,
-                        "args": arguments
+                        "success": True
                     }
 
                 except Exception as e:
-                    print(f"❌ Tool execution error: {e}")
+                    print(f"❌ Tool error: {e}")
                     return {
-                        "response": f"Error executing tool: {str(e)}",
+                        "response": f"Error: {str(e)}",
                         "success": False
                     }
 
@@ -266,10 +234,7 @@ Respond ONLY with valid JSON:
 # FASTAPI APP
 # ============================================================================
 
-app = FastAPI(
-    title="Calculator Agent API",
-    description="Routes math requests to calculation tools"
-)
+app = FastAPI(title="Calculator Agent API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -296,20 +261,18 @@ def root():
     return {
         "status": "running",
         "mcp_server": MCP_SERVER_URL,
-        "model": "gemini-1.5-flash",
         "initialized": agent.initialized
     }
 
 
 @app.get("/health")
 def health_check():
-    """Health check endpoint"""
     return {"status": "healthy"}
 
 
 @app.post("/chat-agent", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    """Process user message and return calculation result"""
+    """Process user message"""
     if not request.message or not request.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
@@ -332,7 +295,7 @@ if __name__ == "__main__":
     print("=" * 60)
 
     uvicorn.run(
-        "agent_EXACT_FIX:app",
+        app,
         host="0.0.0.0",
         port=port,
         proxy_headers=True,
