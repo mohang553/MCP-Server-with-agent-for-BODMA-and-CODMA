@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Calculator MCP Server 
+Calculator MCP Server
 """
 
 from fastapi import FastAPI
