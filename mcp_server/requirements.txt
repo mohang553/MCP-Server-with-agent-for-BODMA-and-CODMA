@@ -1,5 +1,5 @@
 ##Server Requirements
 
-fastapi
-uvicorn
-mcp
+fastapi==0.129.0
+uvicorn==0.40.0
+mcp==1.26.0
