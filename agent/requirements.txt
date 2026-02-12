@@ -1,0 +1,7 @@
+
+##Agent Requirements
+fastapi
+uvicorn
+mcp
+google-generativeai
+python-dotenv
