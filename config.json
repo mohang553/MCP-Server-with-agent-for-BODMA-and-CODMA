@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "calculator-server": {
+      "command": "C:\\Users\\HP\\AppData\\Local\\Microsoft\\WindowsApps\\python.exe",
+      "args": ["F:\\HP\\Alumnx\\Bodma_Codma_mcp\\server.py"],
+      "env": {}
+    }
+  }
+}
