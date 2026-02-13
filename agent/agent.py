@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Calculator Agent API - FIXED VERSION
+Calculator Agent API 
 """
 
 import asyncio
@@ -17,11 +17,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# MCP (SSE transport)
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 
-# Gemini
 import google.generativeai as genai
 
 load_dotenv()
@@ -37,12 +35,12 @@ if not GEMINI_API_KEY:
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-# CRITICAL: Make sure this URL is correct
-MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "https://calculator-mcp-74e1.onrender.com/mcp/sse")
+# CORRECT URL - /sse not /mcp/sse
+MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "https://calculator-mcp-74e1.onrender.com/sse")
 print(f"📡 MCP Server URL: {MCP_SERVER_URL}")
 
 MAX_RETRIES = 3
-RETRY_DELAY = 3  # Increased to 3 seconds
+RETRY_DELAY = 3
 
 
 # ============================================================================
@@ -62,7 +60,6 @@ class MCPClient:
         for attempt in range(MAX_RETRIES):
             try:
                 print(f"🔗 Attempting MCP connection (attempt {attempt + 1}/{MAX_RETRIES})...")
-                print(f"   URL: {MCP_SERVER_URL}")
                 
                 async with sse_client(MCP_SERVER_URL) as (read, write):
                     async with ClientSession(read, write) as session:
@@ -85,16 +82,12 @@ class MCPClient:
                         
             except Exception as e:
                 last_error = str(e)
-                print(f"⚠️  Attempt {attempt + 1} failed: {type(e).__name__}")
-                print(f"   Error: {str(e)[:100]}")
+                print(f"⚠️  Attempt {attempt + 1} failed")
                 
                 if attempt < MAX_RETRIES - 1:
-                    print(f"   Retrying in {RETRY_DELAY} seconds...")
                     await asyncio.sleep(RETRY_DELAY)
                 else:
-                    error_msg = f"Failed to connect to MCP server after {MAX_RETRIES} attempts. URL: {MCP_SERVER_URL}"
-                    print(f"❌ {error_msg}")
-                    raise RuntimeError(error_msg)
+                    raise RuntimeError(f"MCP connection failed after {MAX_RETRIES} attempts")
 
     async def get_tools(self):
         return self.available_tools
@@ -133,17 +126,14 @@ class CalculatorAgent:
             return
             
         try:
-            print("🔧 Initializing agent...")
             async with self.mcp_client.connect():
                 self.tools = await self.mcp_client.get_tools()
                 self.initialized = True
-                print(f"✅ Agent initialized with {len(self.tools)} tools")
         except Exception as e:
-            print(f"❌ Agent initialization failed: {e}")
             raise
 
     def _extract_numeric_answer(self, text: str) -> str:
-        """Extract numeric answer from text"""
+        """Extract numeric answer"""
         numbers = re.findall(r'-?\d+\.?\d*', text)
         if numbers:
             try:
@@ -153,33 +143,17 @@ class CalculatorAgent:
         return text
 
     async def _route(self, user_message: str) -> Dict[str, Any]:
-        """Route user message to appropriate tool"""
-        system_prompt = """You are a math router.
-
-Available tools:
-- bodma: Calculates (a^b) / (a * b)
-- codma: Calculates (a * b) + (a / b)
-
-Respond ONLY with JSON:
-{
-  "action": "use_tool",
-  "tool_name": "bodma or codma",
-  "arguments": {"a": number, "b": number}
-}"""
-
+        """Route user message"""
+        system_prompt = """You are a math router. Tools: bodma, codma. Respond with JSON."""
         prompt = system_prompt + f"\n\nUser: {user_message}\n\nJSON:"
 
         try:
             response = self.model.generate_content(prompt)
             text = response.text.strip()
-
             if text.startswith("```"):
                 text = re.sub(r'```json\n?|\n?```', '', text).strip()
-
             return json.loads(text)
-
         except Exception as e:
-            print(f"❌ Routing error: {e}")
             return {"action": "error", "message": str(e)}
 
     async def run(self, user_message: str) -> Dict[str, Any]:
@@ -191,52 +165,27 @@ Respond ONLY with JSON:
             decision = await self._route(user_message)
 
             if decision.get("action") == "error":
-                return {
-                    "response": f"Error: {decision.get('message', 'Unknown error')}",
-                    "success": False
-                }
+                return {"response": f"Error: {decision.get('message')}"}
 
             if decision.get("action") == "use_tool":
                 tool_name = decision.get("tool_name")
                 arguments = decision.get("arguments", {})
 
                 if not isinstance(arguments, dict) or "a" not in arguments or "b" not in arguments:
-                    return {
-                        "response": "Error: Invalid arguments",
-                        "success": False
-                    }
+                    return {"response": "Error: Invalid arguments"}
 
                 try:
-                    print(f"🔧 Calling {tool_name}({arguments['a']}, {arguments['b']})")
-                    
                     async with self.mcp_client.connect():
                         tool_result = await self.mcp_client.call_tool(tool_name, arguments)
-
                     numeric = self._extract_numeric_answer(tool_result)
-                    
-                    return {
-                        "response": numeric,
-                        "success": True
-                    }
-
+                    return {"response": numeric}
                 except Exception as e:
-                    print(f"❌ Tool error: {e}")
-                    return {
-                        "response": f"Error: {str(e)[:100]}",
-                        "success": False
-                    }
+                    return {"response": f"Error: {str(e)[:100]}"}
 
-            return {
-                "response": "Error: Unknown action",
-                "success": False
-            }
+            return {"response": "Error: Unknown action"}
 
         except Exception as e:
-            print(f"❌ Agent error: {e}")
-            return {
-                "response": f"Error: {str(e)[:100]}",
-                "success": False
-            }
+            return {"response": f"Error: {str(e)[:100]}"}
 
 
 # ============================================================================
@@ -267,11 +216,7 @@ class ChatResponse(BaseModel):
 
 @app.get("/")
 def root():
-    return {
-        "status": "running",
-        "mcp_server": MCP_SERVER_URL,
-        "initialized": agent.initialized
-    }
+    return {"status": "running", "mcp_server": MCP_SERVER_URL}
 
 
 @app.get("/health")
@@ -283,7 +228,7 @@ def health_check():
 async def chat(request: ChatRequest):
     """Process user message"""
     if not request.message or not request.message.strip():
-        raise HTTPException(status_code=400, detail="Message cannot be empty")
+        raise HTTPException(status_code=400, detail="Empty message")
 
     result = await agent.run(request.message)
     return ChatResponse(response=result["response"])
