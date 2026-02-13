@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Calculator Agent API 
+Calculator Agent API - PLAIN HTTP TRANSPORT
 """
 
 import asyncio
@@ -9,16 +9,13 @@ import os
 import uvicorn
 import sys
 import re
-from typing import List, Dict, Any, Optional
-from contextlib import asynccontextmanager
+from typing import Dict, Any
 from dotenv import load_dotenv
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-
-from mcp import ClientSession
-from mcp.client.sse import sse_client
+import httpx
 
 import google.generativeai as genai
 
@@ -35,77 +32,8 @@ if not GEMINI_API_KEY:
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-# CORRECT URL - /sse not /mcp/sse
-MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "https://calculator-mcp-74e1.onrender.com/sse")
+MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "https://calculator-mcp-74e1.onrender.com")
 print(f"📡 MCP Server URL: {MCP_SERVER_URL}")
-
-MAX_RETRIES = 3
-RETRY_DELAY = 3
-
-
-# ============================================================================
-# MCP CLIENT
-# ============================================================================
-
-class MCPClient:
-    def __init__(self):
-        self.session: Optional[ClientSession] = None
-        self.available_tools: List[Dict] = []
-
-    @asynccontextmanager
-    async def connect(self):
-        """Connect with retry logic"""
-        last_error = None
-        
-        for attempt in range(MAX_RETRIES):
-            try:
-                print(f"🔗 Attempting MCP connection (attempt {attempt + 1}/{MAX_RETRIES})...")
-                
-                async with sse_client(MCP_SERVER_URL) as (read, write):
-                    async with ClientSession(read, write) as session:
-                        self.session = session
-                        await session.initialize()
-
-                        tools_list = await session.list_tools()
-                        self.available_tools = [
-                            {
-                                "name": tool.name,
-                                "description": tool.description,
-                                "input_schema": tool.inputSchema
-                            }
-                            for tool in tools_list.tools
-                        ]
-
-                        print(f"✅ MCP connected! Tools: {[t['name'] for t in self.available_tools]}")
-                        yield self
-                        return
-                        
-            except Exception as e:
-                last_error = str(e)
-                print(f"⚠️  Attempt {attempt + 1} failed")
-                
-                if attempt < MAX_RETRIES - 1:
-                    await asyncio.sleep(RETRY_DELAY)
-                else:
-                    raise RuntimeError(f"MCP connection failed after {MAX_RETRIES} attempts")
-
-    async def get_tools(self):
-        return self.available_tools
-
-    async def call_tool(self, tool_name: str, arguments: Dict[str, Any]):
-        """Call tool"""
-        if not self.session:
-            raise RuntimeError("MCP session not initialized")
-
-        result = await self.session.call_tool(tool_name, arguments)
-
-        if result.content:
-            return "\n".join([
-                item.text for item in result.content
-                if hasattr(item, "text")
-            ])
-
-        return "No response"
 
 
 # ============================================================================
@@ -114,26 +42,31 @@ class MCPClient:
 
 class CalculatorAgent:
 
-    def __init__(self, mcp_client, model_name="gemini-1.5-flash"):
-        self.mcp_client = mcp_client
-        self.tools = []
+    def __init__(self, model_name="gemini-1.5-flash"):
         self.model = genai.GenerativeModel(model_name)
+        self.tools = []
         self.initialized = False
 
     async def initialize(self):
-        """Initialize agent"""
+        """Initialize agent by fetching available tools"""
         if self.initialized:
             return
-            
+        
         try:
-            async with self.mcp_client.connect():
-                self.tools = await self.mcp_client.get_tools()
+            print("🔧 Initializing agent...")
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"{MCP_SERVER_URL}/tools", timeout=10.0)
+                response.raise_for_status()
+                data = response.json()
+                self.tools = data.get("tools", [])
                 self.initialized = True
+                print(f"✅ Agent initialized with {len(self.tools)} tools")
         except Exception as e:
+            print(f"❌ Agent initialization failed: {e}")
             raise
 
     def _extract_numeric_answer(self, text: str) -> str:
-        """Extract numeric answer"""
+        """Extract numeric answer from text"""
         numbers = re.findall(r'-?\d+\.?\d*', text)
         if numbers:
             try:
@@ -143,17 +76,38 @@ class CalculatorAgent:
         return text
 
     async def _route(self, user_message: str) -> Dict[str, Any]:
-        """Route user message"""
-        system_prompt = """You are a math router. Tools: bodma, codma. Respond with JSON."""
-        prompt = system_prompt + f"\n\nUser: {user_message}\n\nJSON:"
+        """Route user message to appropriate tool"""
+        system_prompt = """You are a math router that decides which calculation tool to use.
+
+Available tools:
+- bodma: Calculates (a^b) / (a * b)
+- codma: Calculates (a * b) + (a / b)
+
+Respond ONLY with valid JSON:
+{
+  "action": "use_tool",
+  "tool_name": "bodma or codma",
+  "arguments": {"a": number, "b": number}
+}"""
+
+        prompt = system_prompt + f"\n\nUser request: {user_message}\n\nJSON Response:"
 
         try:
             response = self.model.generate_content(prompt)
             text = response.text.strip()
+
+            # Remove markdown code blocks
             if text.startswith("```"):
                 text = re.sub(r'```json\n?|\n?```', '', text).strip()
-            return json.loads(text)
+
+            decision = json.loads(text)
+            return decision
+
+        except json.JSONDecodeError as e:
+            print(f"❌ JSON parsing error: {e}")
+            return {"action": "error", "message": f"Invalid JSON response"}
         except Exception as e:
+            print(f"❌ Routing error: {e}")
             return {"action": "error", "message": str(e)}
 
     async def run(self, user_message: str) -> Dict[str, Any]:
@@ -165,34 +119,79 @@ class CalculatorAgent:
             decision = await self._route(user_message)
 
             if decision.get("action") == "error":
-                return {"response": f"Error: {decision.get('message')}"}
+                return {
+                    "response": f"Error: {decision.get('message', 'Unknown error')}",
+                    "success": False
+                }
 
             if decision.get("action") == "use_tool":
                 tool_name = decision.get("tool_name")
                 arguments = decision.get("arguments", {})
 
+                # Validate arguments
                 if not isinstance(arguments, dict) or "a" not in arguments or "b" not in arguments:
-                    return {"response": "Error: Invalid arguments"}
+                    return {
+                        "response": "Error: Invalid arguments. Need 'a' and 'b'",
+                        "success": False
+                    }
 
                 try:
-                    async with self.mcp_client.connect():
-                        tool_result = await self.mcp_client.call_tool(tool_name, arguments)
-                    numeric = self._extract_numeric_answer(tool_result)
-                    return {"response": numeric}
-                except Exception as e:
-                    return {"response": f"Error: {str(e)[:100]}"}
+                    a = arguments["a"]
+                    b = arguments["b"]
+                    
+                    print(f"🔧 Calling {tool_name}({a}, {b})")
+                    
+                    # Call the HTTP endpoint directly
+                    async with httpx.AsyncClient() as client:
+                        response = await client.post(
+                            f"{MCP_SERVER_URL}/tools/{tool_name}",
+                            params={"a": a, "b": b},
+                            timeout=10.0
+                        )
+                        response.raise_for_status()
+                        data = response.json()
+                        tool_result = str(data.get("result", "No result"))
 
-            return {"response": "Error: Unknown action"}
+                    print(f"✅ Tool result: {tool_result}")
+                    
+                    # Extract the numeric result
+                    numeric = self._extract_numeric_answer(tool_result)
+                    
+                    return {
+                        "response": numeric,
+                        "success": True,
+                        "tool": tool_name,
+                        "args": arguments
+                    }
+
+                except Exception as e:
+                    print(f"❌ Tool execution error: {e}")
+                    return {
+                        "response": f"Error executing tool: {str(e)}",
+                        "success": False
+                    }
+
+            return {
+                "response": "Error: Unknown action",
+                "success": False
+            }
 
         except Exception as e:
-            return {"response": f"Error: {str(e)[:100]}"}
+            print(f"❌ Agent error: {e}")
+            return {
+                "response": f"Error: {str(e)}",
+                "success": False
+            }
 
 
 # ============================================================================
 # FASTAPI APP
 # ============================================================================
 
-app = FastAPI(title="Calculator Agent API")
+app = FastAPI(
+    title="Calculator Agent API",
+    description="Routes math requests to calculation tools via HTTP"
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -202,8 +201,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-client = MCPClient()
-agent = CalculatorAgent(client)
+agent = CalculatorAgent()
 
 
 class ChatRequest(BaseModel):
@@ -216,19 +214,24 @@ class ChatResponse(BaseModel):
 
 @app.get("/")
 def root():
-    return {"status": "running", "mcp_server": MCP_SERVER_URL}
+    return {
+        "status": "running",
+        "mcp_server": MCP_SERVER_URL,
+        "initialized": agent.initialized
+    }
 
 
 @app.get("/health")
 def health_check():
+    """Health check endpoint"""
     return {"status": "healthy"}
 
 
 @app.post("/chat-agent", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    """Process user message"""
+    """Process user message and return calculation result"""
     if not request.message or not request.message.strip():
-        raise HTTPException(status_code=400, detail="Empty message")
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
 
     result = await agent.run(request.message)
     return ChatResponse(response=result["response"])
@@ -242,7 +245,7 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8005))
 
     print("=" * 60)
-    print("🤖 CALCULATOR AGENT API")
+    print("🤖 CALCULATOR AGENT API (HTTP Transport)")
     print("=" * 60)
     print(f"📡 Running on port: {port}")
     print(f"🔗 MCP Server: {MCP_SERVER_URL}")
