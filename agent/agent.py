@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Calculator Agent API
+Calculator Agent API - FIXED VERSION
 """
 
 import asyncio
@@ -37,9 +37,12 @@ if not GEMINI_API_KEY:
 
 genai.configure(api_key=GEMINI_API_KEY)
 
+# CRITICAL: Make sure this URL is correct
 MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "https://calculator-mcp-74e1.onrender.com/mcp/sse")
+print(f"📡 MCP Server URL: {MCP_SERVER_URL}")
+
 MAX_RETRIES = 3
-RETRY_DELAY = 2
+RETRY_DELAY = 3  # Increased to 3 seconds
 
 
 # ============================================================================
@@ -59,6 +62,7 @@ class MCPClient:
         for attempt in range(MAX_RETRIES):
             try:
                 print(f"🔗 Attempting MCP connection (attempt {attempt + 1}/{MAX_RETRIES})...")
+                print(f"   URL: {MCP_SERVER_URL}")
                 
                 async with sse_client(MCP_SERVER_URL) as (read, write):
                     async with ClientSession(read, write) as session:
@@ -75,18 +79,22 @@ class MCPClient:
                             for tool in tools_list.tools
                         ]
 
-                        print(f"✅ MCP connected. Tools: {[t['name'] for t in self.available_tools]}")
+                        print(f"✅ MCP connected! Tools: {[t['name'] for t in self.available_tools]}")
                         yield self
                         return
                         
             except Exception as e:
                 last_error = str(e)
-                print(f"⚠️  Attempt {attempt + 1} failed: {e}")
+                print(f"⚠️  Attempt {attempt + 1} failed: {type(e).__name__}")
+                print(f"   Error: {str(e)[:100]}")
                 
                 if attempt < MAX_RETRIES - 1:
+                    print(f"   Retrying in {RETRY_DELAY} seconds...")
                     await asyncio.sleep(RETRY_DELAY)
                 else:
-                    raise RuntimeError(f"MCP connection failed after {MAX_RETRIES} attempts: {last_error}")
+                    error_msg = f"Failed to connect to MCP server after {MAX_RETRIES} attempts. URL: {MCP_SERVER_URL}"
+                    print(f"❌ {error_msg}")
+                    raise RuntimeError(error_msg)
 
     async def get_tools(self):
         return self.available_tools
@@ -125,6 +133,7 @@ class CalculatorAgent:
             return
             
         try:
+            print("🔧 Initializing agent...")
             async with self.mcp_client.connect():
                 self.tools = await self.mcp_client.get_tools()
                 self.initialized = True
@@ -213,7 +222,7 @@ Respond ONLY with JSON:
                 except Exception as e:
                     print(f"❌ Tool error: {e}")
                     return {
-                        "response": f"Error: {str(e)}",
+                        "response": f"Error: {str(e)[:100]}",
                         "success": False
                     }
 
@@ -225,7 +234,7 @@ Respond ONLY with JSON:
         except Exception as e:
             print(f"❌ Agent error: {e}")
             return {
-                "response": f"Error: {str(e)}",
+                "response": f"Error: {str(e)[:100]}",
                 "success": False
             }
 
