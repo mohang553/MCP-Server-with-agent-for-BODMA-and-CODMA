@@ -1,83 +1,29 @@
 #!/usr/bin/env python3
 """
-Calculator MCP Server - PROPER HTTP TRANSPORT
-Uses FastAPI with proper HTTP endpoints for MCP
+Calculator MCP Server - CORRECT FORMULAS
+BODMA: (a^b) / (a*b)
+CODMA: (a*b) / (a^b)
 """
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
-import json
 import os
 import uvicorn
-from mcp.server.fastmcp import FastMCP
-from contextlib import asynccontextmanager
-
-# ============================================================================
-# CREATE MCP SERVER
-# ============================================================================
-
-mcp = FastMCP(name="Calculator MCP")
-
-
-# ============================================================================
-# DEFINE CALCULATION TOOLS
-# ============================================================================
-
-@mcp.tool()
-def bodma(a: float, b: float) -> float:
-    """Calculates (a^b) / (a * b)"""
-    try:
-        denominator = a * b
-        if denominator == 0:
-            return 0.0
-        result = (a ** b) / denominator
-        return round(result, 2)
-    except:
-        return 0.0
-
-
-@mcp.tool()
-def codma(a: float, b: float) -> float:
-    """Calculates (a * b) + (a / b)"""
-    try:
-        if b == 0:
-            return 0.0
-        result = (a * b) + (a / b)
-        return round(result, 2)
-    except:
-        return 0.0
-
-
-# ============================================================================
-# CREATE FASTAPI APP
-# ============================================================================
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup
-    print("✅ Server starting...")
-    yield
-    # Shutdown
-    print("✅ Server shutting down...")
-
 
 app = FastAPI(
     title="Calculator MCP Server",
-    description="MCP Server with HTTP transport",
-    lifespan=lifespan
+    description="MCP Server with BODMA and CODMA calculation tools - CORRECT FORMULAS"
 )
-
-
-# ============================================================================
-# HTTP ENDPOINTS (Not SSE, just plain HTTP)
-# ============================================================================
 
 @app.get("/")
 async def root():
     return {
         "status": "MCP Server Running",
         "version": "1.0",
-        "tools": ["bodma", "codma"]
+        "tools": ["bodma_calculate", "codma_calculate"],
+        "formulas": {
+            "bodma_calculate": "(a^b) / (a*b)",
+            "codma_calculate": "(a*b) / (a^b)"
+        }
     }
 
 
@@ -86,22 +32,41 @@ async def health():
     return {"status": "healthy"}
 
 
-@app.post("/tools/bodma")
-async def call_bodma(a: float, b: float):
-    """Direct HTTP endpoint for bodma"""
+@app.post("/tools/bodma_calculate")
+async def bodma_calculate(a: float, b: float):
+    """
+    BODMA: (a^b) / (a*b)
+    
+    Example: bodma(2, 3) = (2^3) / (2*3) = 8/6 = 1.33
+    """
     try:
-        result = bodma(a, b)
-        return {"result": result}
+        denominator = a * b
+        if denominator == 0:
+            return {"result": 0.0}
+        
+        numerator = a ** b
+        result = numerator / denominator
+        return {"result": round(result, 2)}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.post("/tools/codma")
-async def call_codma(a: float, b: float):
-    """Direct HTTP endpoint for codma"""
+@app.post("/tools/codma_calculate")
+async def codma_calculate(a: float, b: float):
+    """
+    CODMA: (a*b) / (a^b)
+    
+    Example: codma(2, 3) = (2*3) / (2^3) = 6/8 = 0.75
+    """
     try:
-        result = codma(a, b)
-        return {"result": result}
+        numerator = a * b
+        denominator = a ** b
+        
+        if denominator == 0:
+            return {"result": 0.0}
+        
+        result = numerator / denominator
+        return {"result": round(result, 2)}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -112,12 +77,12 @@ async def list_tools():
     return {
         "tools": [
             {
-                "name": "bodma",
-                "description": "Calculates (a^b) / (a * b)",
+                "name": "bodma_calculate",
+                "description": "Calculates (a^b) / (a*b)",
             },
             {
-                "name": "codma",
-                "description": "Calculates (a * b) + (a / b)",
+                "name": "codma_calculate",
+                "description": "Calculates (a*b) / (a^b)",
             }
         ]
     }
@@ -130,14 +95,17 @@ async def list_tools():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     
-    print("=" * 60)
-    print("🤖 CALCULATOR MCP SERVER (HTTP Transport)")
-    print("=" * 60)
+    print("=" * 70)
+    print("🤖 CALCULATOR MCP SERVER (CORRECT FORMULAS)")
+    print("=" * 70)
     print(f"📡 Running on port: {port}")
+    print(f"")
+    print(f"BODMA: (a^b) / (a*b)")
+    print(f"CODMA: (a*b) / (a^b)")
+    print(f"")
     print(f"🔗 Health: http://0.0.0.0:{port}/health")
     print(f"🔗 Tools: http://0.0.0.0:{port}/tools")
-    print(f"🔗 Docs: http://0.0.0.0:{port}/docs")
-    print("=" * 60)
+    print("=" * 70)
     
     uvicorn.run(
         app,
