@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
-Calculator Agent API - PLAIN HTTP TRANSPORT
+Calculator Agent API - EXACT ORIGINAL LOGIC
+HTTP Transport Version
+Handles BODMA, CODMA, and complex multi-step queries
 """
 
 import asyncio
@@ -37,150 +39,162 @@ print(f"📡 MCP Server URL: {MCP_SERVER_URL}")
 
 
 # ============================================================================
-# CALCULATOR AGENT
+# CALCULATOR AGENT - ORIGINAL LOGIC PRESERVED
 # ============================================================================
 
 class CalculatorAgent:
 
     def __init__(self, model_name="gemini-2.5-flash"):
-        self.model = genai.GenerativeModel(model_name)
-        self.tools = []
-        self.initialized = False
-
-    async def initialize(self):
-        """Initialize agent by fetching available tools"""
-        if self.initialized:
-            return
-        
+        self.model_name = model_name
         try:
-            print("🔧 Initializing agent...")
-            async with httpx.AsyncClient() as client:
-                response = await client.get(f"{MCP_SERVER_URL}/tools", timeout=10.0)
-                response.raise_for_status()
-                data = response.json()
-                self.tools = data.get("tools", [])
-                self.initialized = True
-                print(f"✅ Agent initialized with {len(self.tools)} tools")
+            self.model = genai.GenerativeModel(model_name)
+            print(f"✅ Using model: {model_name}")
         except Exception as e:
-            print(f"❌ Agent initialization failed: {e}")
-            raise
+            print(f"⚠️  Model {model_name} failed: {e}")
+            print(f"🔄 Trying fallback model: gemini-pro")
+            self.model = genai.GenerativeModel("gemini-pro")
+            self.model_name = "gemini-pro"
 
-    def _extract_numeric_answer(self, text: str) -> str:
-        """Extract numeric answer from text"""
-        numbers = re.findall(r'-?\d+\.?\d*', text)
+    def _extract_numeric_answer(self, response_text: str, decimal_places: int = 2):
+        """Extract numeric answer - ORIGINAL LOGIC"""
+        import re
+        numbers = re.findall(r'-?\d+\.?\d*', response_text)
         if numbers:
             try:
-                return str(round(float(numbers[-1]), 2))
-            except ValueError:
+                return str(round(float(numbers[0]), decimal_places))
+            except:
                 pass
-        return text
+        return response_text
 
-    async def _route(self, user_message: str) -> Dict[str, Any]:
-        """Route user message to appropriate tool"""
-        system_prompt = """You are a math router that decides which calculation tool to use.
+    async def _call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> str:
+        """Call tool via HTTP - ORIGINAL FLOW"""
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{MCP_SERVER_URL}/tools/{tool_name}",
+                    params=arguments,
+                    timeout=10.0
+                )
+                response.raise_for_status()
+                data = response.json()
+                return str(data.get("result", "No result"))
+        except Exception as e:
+            print(f"❌ Tool call error: {e}")
+            raise
+
+    async def _route_with_gemini(self, user_message: str):
+        """Route with Gemini - EXACT ORIGINAL LOGIC"""
+
+        system_prompt = f"""
+You are a math agent.
 
 Available tools:
-- bodma: Calculates (a^b) / (a * b)
-- codma: Calculates (a * b) + (a / b)
+- bodma_calculate
+- codma_calculate
 
-Respond ONLY with valid JSON:
-{
-  "action": "use_tool",
-  "tool_name": "bodma or codma",
-  "arguments": {"a": number, "b": number}
-}"""
+If user asks for:
+- Only BODMA → use bodma_calculate
+- Only CODMA → use codma_calculate
+- Both → use "both"
 
-        prompt = system_prompt + f"\n\nUser request: {user_message}\n\nJSON Response:"
+Return JSON:
+{{
+ "action": "use_tool",
+ "tool_name": "...",
+ "arguments": {{"a": number, "b": number}}
+}}
+"""
+
+        prompt = system_prompt + f"\nUser: {user_message}\nJSON:"
 
         try:
             response = self.model.generate_content(prompt)
             text = response.text.strip()
 
-            # Remove markdown code blocks
             if text.startswith("```"):
-                text = re.sub(r'```json\n?|\n?```', '', text).strip()
+                text = text.replace("```json", "").replace("```", "").strip()
 
-            decision = json.loads(text)
-            return decision
-
-        except json.JSONDecodeError as e:
-            print(f"❌ JSON parsing error: {e}")
-            return {"action": "error", "message": f"Invalid JSON response"}
+            return json.loads(text)
         except Exception as e:
             print(f"❌ Routing error: {e}")
             return {"action": "error", "message": str(e)}
 
-    async def run(self, user_message: str) -> Dict[str, Any]:
-        """Main agent loop"""
-        try:
-            if not self.initialized:
-                await self.initialize()
+    async def run(self, user_message: str):
+        """Main run - EXACT ORIGINAL FLOW"""
 
-            decision = await self._route(user_message)
+        try:
+            decision = await self._route_with_gemini(user_message)
 
             if decision.get("action") == "error":
                 return {
-                    "response": f"Error: {decision.get('message', 'Unknown error')}",
-                    "success": False
+                    "type": "direct_response",
+                    "response": decision.get("message", "Error processing request")
                 }
 
             if decision.get("action") == "use_tool":
-                tool_name = decision.get("tool_name")
-                arguments = decision.get("arguments", {})
 
-                # Validate arguments
-                if not isinstance(arguments, dict) or "a" not in arguments or "b" not in arguments:
-                    return {
-                        "response": "Error: Invalid arguments. Need 'a' and 'b'",
-                        "success": False
-                    }
+                tool_name = decision["tool_name"]
+                arguments = decision["arguments"]
 
-                try:
-                    a = arguments["a"]
-                    b = arguments["b"]
-                    
-                    print(f"🔧 Calling {tool_name}({a}, {b})")
-                    
-                    # Call the HTTP endpoint directly
-                    async with httpx.AsyncClient() as client:
-                        response = await client.post(
-                            f"{MCP_SERVER_URL}/tools/{tool_name}",
-                            params={"a": a, "b": b},
-                            timeout=10.0
-                        )
-                        response.raise_for_status()
-                        data = response.json()
-                        tool_result = str(data.get("result", "No result"))
+                print(f"🔧 Decision: tool_name={tool_name}, args={arguments}")
 
-                    print(f"✅ Tool result: {tool_result}")
+                if tool_name == "both":
+                    # EXACT ORIGINAL LOGIC: Call both tools
+                    print(f"📊 Calling BOTH tools with a={arguments['a']}, b={arguments['b']}")
                     
-                    # Extract the numeric result
-                    numeric = self._extract_numeric_answer(tool_result)
+                    bodma_result = await self._call_tool("bodma_calculate", arguments)
+                    print(f"  ✅ BODMA result: {bodma_result}")
                     
-                    return {
-                        "response": numeric,
-                        "success": True,
-                        "tool": tool_name,
-                        "args": arguments
-                    }
+                    codma_result = await self._call_tool("codma_calculate", arguments)
+                    print(f"  ✅ CODMA result: {codma_result}")
 
-                except Exception as e:
-                    print(f"❌ Tool execution error: {e}")
-                    return {
-                        "response": f"Error executing tool: {str(e)}",
-                        "success": False
-                    }
+                    # EXACT ORIGINAL: Send both results to Gemini
+                    follow_up_prompt = f"""
+User asked: {user_message}
+
+BODMA result: {bodma_result}
+CODMA result: {codma_result}
+
+Return only final numeric answer.
+"""
+
+                else:
+                    # EXACT ORIGINAL: Single tool call
+                    print(f"📊 Calling {tool_name} with a={arguments['a']}, b={arguments['b']}")
+                    
+                    tool_result = await self._call_tool(tool_name, arguments)
+                    print(f"  ✅ Result: {tool_result}")
+
+                    follow_up_prompt = f"""
+User asked: {user_message}
+
+Tool result:
+{tool_result}
+
+Return only final numeric answer.
+"""
+
+                # EXACT ORIGINAL: Get final response from Gemini
+                final_response = self.model.generate_content(follow_up_prompt)
+                numeric = self._extract_numeric_answer(final_response.text)
+
+                print(f"📝 Final numeric answer: {numeric}")
+
+                return {
+                    "type": "direct_response",
+                    "response": numeric
+                }
 
             return {
-                "response": "Error: Unknown action",
-                "success": False
+                "type": "direct_response",
+                "response": "Could not process request"
             }
 
         except Exception as e:
             print(f"❌ Agent error: {e}")
             return {
-                "response": f"Error: {str(e)}",
-                "success": False
+                "type": "direct_response",
+                "response": f"Error: {str(e)}"
             }
 
 
@@ -189,8 +203,8 @@ Respond ONLY with valid JSON:
 # ============================================================================
 
 app = FastAPI(
-    title="Calculator Agent API",
-    description="Routes math requests to calculation tools via HTTP"
+    title="Calculator Agent API (HTTP Transport)",
+    version="3.0.0"
 )
 
 app.add_middleware(
@@ -204,6 +218,10 @@ app.add_middleware(
 agent = CalculatorAgent()
 
 
+# ============================================================================
+# REQUEST MODELS
+# ============================================================================
+
 class ChatRequest(BaseModel):
     message: str
 
@@ -212,28 +230,31 @@ class ChatResponse(BaseModel):
     response: str
 
 
+# ============================================================================
+# ENDPOINTS
+# ============================================================================
+
 @app.get("/")
 def root():
     return {
         "status": "running",
+        "transport": "HTTP",
         "mcp_server": MCP_SERVER_URL,
-        "initialized": agent.initialized
+        "model": agent.model_name
     }
 
 
 @app.get("/health")
-def health_check():
-    """Health check endpoint"""
+def health():
     return {"status": "healthy"}
 
 
 @app.post("/chat-agent", response_model=ChatResponse)
-async def chat(request: ChatRequest):
-    """Process user message and return calculation result"""
-    if not request.message or not request.message.strip():
-        raise HTTPException(status_code=400, detail="Message cannot be empty")
+async def chat_with_agent(request: ChatRequest):
+    """Process user message - EXACT ORIGINAL LOGIC"""
 
     result = await agent.run(request.message)
+
     return ChatResponse(response=result["response"])
 
 
@@ -244,17 +265,12 @@ async def chat(request: ChatRequest):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8005))
 
-    print("=" * 60)
-    print("🤖 CALCULATOR AGENT API (HTTP Transport)")
-    print("=" * 60)
-    print(f"📡 Running on port: {port}")
-    print(f"🔗 MCP Server: {MCP_SERVER_URL}")
-    print("=" * 60)
+    print("=" * 70)
+    print("🤖 CALCULATOR AGENT API - HTTP TRANSPORT")
+    print("=" * 70)
+    print(f"📡 Agent running on port: {port}")
+    print(f"🔗 Connected to MCP: {MCP_SERVER_URL}")
+    print("✨ Features: BODMA, CODMA, Complex queries")
+    print("=" * 70)
 
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=port,
-        proxy_headers=True,
-        forwarded_allow_ips="*"
-    )
+    uvicorn.run(app, host="0.0.0.0", port=port)
