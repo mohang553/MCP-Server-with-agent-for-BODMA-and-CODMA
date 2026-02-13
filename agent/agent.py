@@ -42,7 +42,7 @@ print(f"📡 MCP Server URL: {MCP_SERVER_URL}")
 
 class CalculatorAgent:
 
-    def __init__(self, model_name="gemini-1.5-flash"):
+    def __init__(self, model_name="gemini-2.5-flash"):
         self.model = genai.GenerativeModel(model_name)
         self.tools = []
         self.initialized = False
